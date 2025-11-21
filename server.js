@@ -46,69 +46,33 @@ const PORT = process.env.PORT || 5000;
 const app = express();
 const server = createServer(app);
 
-// Build flexible allowed origins
-const allowedOriginsEnv = process.env.ALLOWED_ORIGINS || ""; // comma separated
-const allowedOrigins = allowedOriginsEnv
-  ? allowedOriginsEnv.split(",").map((s) => s.trim())
-  : null; // if null -> allow all
+// ---------- CORS (FIXED) ----------
+// Sab origin allow + preflight (OPTIONS) bhi handle
+app.use(
+  cors({
+    origin: "*", // chahe 127.0.0.1:5501 ho ya Render ka domain, sab allowed
+    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allowedHeaders: [
+      "Content-Type",
+      "Authorization",
+      "X-Requested-With",
+      "Accept",
+      "Origin",
+    ],
+  })
+);
 
-// CORS config — allow dynamic origins or wildcard
-const corsOptions = {
-  origin: (origin, callback) => {
-    // Allow requests with no origin (like server-to-server, curl)
-    if (!origin) return callback(null, true);
-
-    if (!allowedOrigins) {
-      // no restriction configured => allow all
-      return callback(null, true);
-    }
-
-    if (allowedOrigins.indexOf(origin) !== -1) {
-      return callback(null, true);
-    }
-
-    callback(new Error("CORS Not Allowed by server"));
-  },
-  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-  allowedHeaders: [
-    "Content-Type",
-    "Authorization",
-    "X-Requested-With",
-    "Accept",
-    "Origin",
-  ],
-  credentials: false,
-};
-
-app.use(cors(corsOptions));
-
-app.use((req, res, next) => {
-  if (!allowedOrigins) {
-    res.setHeader("Access-Control-Allow-Origin", "*");
-  }
-  res.setHeader(
-    "Access-Control-Allow-Headers",
-    "Origin, X-Requested-With, Content-Type, Accept, Authorization"
-  );
-  res.setHeader(
-    "Access-Control-Allow-Methods",
-    "GET, POST, PUT, DELETE, OPTIONS"
-  );
-  next();
-});
-
+// Preflight requests (OPTIONS) ko yahin handle karenge
+app.options("*", cors());
 
 app.use(express.json());
-app.set("io", null); // temp, will set after io created
 
-// Socket.IO with CORS (must match express CORS settings)
+// Socket.IO with simple CORS
 const io = new Server(server, {
   cors: {
-    origin: allowedOrigins ? allowedOrigins : "*",
+    origin: "*",
     methods: ["GET", "POST"],
-    credentials: false,
   },
-  // path: '/socket.io' // default
 });
 
 app.set("io", io);
@@ -357,10 +321,10 @@ app.use((err, req, res, next) => {
     error: err.message || err,
   });
 });
+
 // start
 server.listen(PORT, () => {
   console.log(`Server Running on PORT ${PORT}`);
-  console.log("Allowed origins:", allowedOrigins ? allowedOrigins : "ALL (*)");
 });
 
 // process-level handlers
@@ -369,6 +333,5 @@ process.on("unhandledRejection", (reason, p) => {
 });
 process.on("uncaughtException", (err) => {
   console.error("Uncaught Exception thrown", err);
-  // optionally exit
-  // process.exit(1);
+  // process.exit(1); // optional
 });
